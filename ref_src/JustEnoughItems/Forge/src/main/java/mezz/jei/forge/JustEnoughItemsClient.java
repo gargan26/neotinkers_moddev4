@@ -1,0 +1,116 @@
+package mezz.jei.forge;
+
+import mezz.jei.api.IModPlugin;
+import mezz.jei.api.constants.ModIds;
+import mezz.jei.common.Internal;
+import mezz.jei.common.gui.textures.Textures;
+import mezz.jei.common.network.IConnectionToServer;
+import mezz.jei.forge.events.PermanentEventSubscriptions;
+import mezz.jei.forge.network.NetworkHandler;
+import mezz.jei.forge.plugins.forge.ForgeGuiPlugin;
+import mezz.jei.forge.startup.ForgePluginFinder;
+import mezz.jei.forge.startup.StartEventObserver;
+import mezz.jei.gui.config.InternalKeyMappings;
+import mezz.jei.common.gui.RecipeSlotOptionsTooltipComponent;
+import mezz.jei.common.gui.IngredientsTooltipComponent;
+import mezz.jei.gui.overlay.bookmarks.PreviewTooltipComponent;
+import mezz.jei.gui.recipes.InteractiveIngredientGridTooltipComponent;
+import mezz.jei.library.gui.ingredients.TagContentTooltipComponent;
+import mezz.jei.library.plugins.vanilla.cooking.JeiSmeltingRecipe;
+import mezz.jei.library.plugins.vanilla.crafting.JeiShapedRecipe;
+import mezz.jei.library.recipes.RecipeSerializers;
+import mezz.jei.library.startup.JeiStarter;
+import mezz.jei.library.startup.StartData;
+import net.minecraft.server.packs.resources.ResourceManager;
+import net.minecraft.server.packs.resources.ResourceManagerReloadListener;
+import net.minecraft.world.item.crafting.RecipeHolder;
+import net.minecraft.world.item.crafting.RecipeSerializer;
+import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
+import net.minecraftforge.client.event.RegisterClientTooltipComponentFactoriesEvent;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+import net.minecraftforge.client.event.RecipesUpdatedEvent;
+import net.minecraftforge.event.GameShuttingDownEvent;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.registries.DeferredRegister;
+import net.minecraftforge.registries.ForgeRegistries;
+
+import java.util.List;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+public class JustEnoughItemsClient {
+	private final PermanentEventSubscriptions subscriptions;
+	private final JeiStarter jeiStarter;
+
+	public JustEnoughItemsClient(
+		NetworkHandler networkHandler,
+		PermanentEventSubscriptions subscriptions
+	) {
+		this.subscriptions = subscriptions;
+
+		IConnectionToServer serverConnection = networkHandler.getConnectionToServer();
+
+		List<IModPlugin> plugins = ForgePluginFinder.getModPlugins();
+		StartData startData = new StartData(
+			plugins,
+			serverConnection
+		);
+
+		this.jeiStarter = new JeiStarter(startData);
+
+		StartEventObserver startEventObserver = new StartEventObserver(this.jeiStarter::start, this.jeiStarter::stop);
+		startEventObserver.register(subscriptions);
+	}
+
+	public void register() {
+		subscriptions.register(RegisterClientReloadListenersEvent.class, this::onRegisterReloadListenerEvent);
+		subscriptions.register(RegisterClientTooltipComponentFactoriesEvent.class, this::onRegisterClientTooltipEvent);
+		subscriptions.register(RecipesUpdatedEvent.class, this::onRecipesUpdatedEvent);
+		subscriptions.register(GameShuttingDownEvent.class, e -> onGameShuttingDown());
+		subscriptions.register(RegisterKeyMappingsEvent.class, e -> {
+			InternalKeyMappings keyMappings = new InternalKeyMappings(e::register);
+			Internal.setKeyMappings(keyMappings);
+		});
+
+		IEventBus modEventBus = subscriptions.getModEventBus();
+		DeferredRegister<RecipeSerializer<?>> deferredRegister = DeferredRegister.create(ForgeRegistries.RECIPE_SERIALIZERS, ModIds.JEI_ID);
+		deferredRegister.register(modEventBus);
+
+		Supplier<RecipeSerializer<?>> jeiShaped = deferredRegister.register("jei_shaped", JeiShapedRecipe.Serializer::new);
+		Supplier<RecipeSerializer<?>> jeiSmelting = deferredRegister.register("jei_smelting", () -> JeiSmeltingRecipe.SERIALIZER);
+		RecipeSerializers.register(jeiShaped, jeiSmelting);
+	}
+
+	private void onGameShuttingDown() {
+		jeiStarter.stop();
+		Internal.onClientStopping();
+	}
+
+	private void onRecipesUpdatedEvent(RecipesUpdatedEvent event) {
+		List<RecipeHolder<?>> recipes = List.copyOf(event.getRecipeManager().getRecipes());
+		if (!recipes.isEmpty()) {
+			Internal.setClientSyncedRecipes(recipes);
+		}
+	}
+
+	private void onRegisterReloadListenerEvent(RegisterClientReloadListenersEvent event) {
+		Textures textures = Internal.getTextures();
+		event.registerReloadListener(textures.getGuiSpriteManager());
+		event.registerReloadListener(createReloadListener());
+	}
+
+	private void onRegisterClientTooltipEvent(RegisterClientTooltipComponentFactoriesEvent event) {
+		event.register(IngredientsTooltipComponent.class, Function.identity());
+		event.register(PreviewTooltipComponent.class, Function.identity());
+		event.register(RecipeSlotOptionsTooltipComponent.class, Function.identity());
+		event.register(TagContentTooltipComponent.class, Function.identity());
+		event.register(InteractiveIngredientGridTooltipComponent.class, Function.identity());
+	}
+
+	private ResourceManagerReloadListener createReloadListener() {
+		return (ResourceManager resourceManager) -> {
+			ForgeGuiPlugin.getResourceReloadHandler()
+				.ifPresent(r -> r.onResourceManagerReload(resourceManager));
+		};
+	}
+}

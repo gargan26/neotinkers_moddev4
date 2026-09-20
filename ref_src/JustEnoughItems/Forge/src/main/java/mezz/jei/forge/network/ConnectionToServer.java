@@ -1,0 +1,73 @@
+package mezz.jei.forge.network;
+
+import mezz.jei.common.network.ClientConnectionHelper;
+import mezz.jei.common.network.IConnectionToServer;
+import mezz.jei.common.network.packets.PacketDeletePlayerItem;
+import mezz.jei.common.network.packets.PlayToServerPacket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.network.Connection;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraftforge.network.Channel;
+import net.minecraftforge.network.NetworkDirection;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.UUID;
+
+public final class ConnectionToServer implements IConnectionToServer {
+	private static final String FORGE_SERVER_BRAND = "forge";
+
+	@Nullable
+	private static UUID jeiOnServerCacheUuid = null;
+	private static boolean jeiOnServerCacheValue = false;
+	private final NetworkHandler networkHandler;
+
+	public ConnectionToServer(NetworkHandler networkHandler) {
+		this.networkHandler = networkHandler;
+	}
+
+	@Override
+	public boolean isJeiOnServer() {
+		return canSendPacket(PacketDeletePlayerItem.TYPE);
+	}
+
+	@Override
+	public boolean isSameModLoader() {
+		return ClientConnectionHelper.hasServerBrand(FORGE_SERVER_BRAND);
+	}
+
+	@Override
+	public boolean canSendPacket(CustomPacketPayload.Type<?> packetType) {
+		Minecraft minecraft = Minecraft.getInstance();
+		ClientPacketListener clientPacketListener = minecraft.getConnection();
+		if (clientPacketListener == null || !clientPacketListener.getConnection().isConnected()) {
+			return false;
+		}
+		UUID id = clientPacketListener.getId();
+		if (!id.equals(jeiOnServerCacheUuid)) {
+			jeiOnServerCacheUuid = id;
+			Connection connection = clientPacketListener.getConnection();
+			Channel<CustomPacketPayload> channel = networkHandler.getChannel();
+			jeiOnServerCacheValue = channel.isRemotePresent(connection);
+		}
+		return jeiOnServerCacheValue;
+	}
+
+	@Override
+	public <T extends PlayToServerPacket<T>> void sendPacketToServer(T packet) {
+		Minecraft minecraft = Minecraft.getInstance();
+		ClientPacketListener netHandler = minecraft.getConnection();
+		if (netHandler != null && canSendPacket(packet.type())) {
+			Channel<CustomPacketPayload> channel = networkHandler.getChannel();
+			Packet<?> payload = NetworkDirection.PLAY_TO_SERVER.buildPacket(channel, packet);
+			netHandler.send(payload);
+		}
+	}
+
+	@Override
+	public void onRuntimeStopped() {
+		jeiOnServerCacheUuid = null;
+		jeiOnServerCacheValue = false;
+	}
+}
